@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+
+{% block title %}Active Hosts | Network Attack &amp; Monitoring Framework{% endblock %}
+
+{% block content %}
+<div class="page-container">
+    <div class="card full-width-card">
+        <div class="card-header">
+            <div class="card-title-group">
+                <h3 class="card-title">Discovered Network Hosts</h3>
+                <span class="card-subtitle">Active IPv4 endpoints observed transmitting or receiving traffic</span>
+            </div>
+            <div class="card-controls">
+                <button class="btn btn-sm btn-outline" onclick="loadHostsPageData()">Refresh Hosts</button>
+            </div>
+        </div>
+
+        <!-- Hosts Table -->
+        <div class="card-body table-responsive">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th style="width: 70px;">ID</th>
+                        <th style="width: 180px;">IP Address</th>
+                        <th style="width: 200px;">First Seen</th>
+                        <th style="width: 200px;">Last Seen</th>
+                        <th style="width: 150px;">Packet Count</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="hosts-table-body">
+                    <tr>
+                        <td colspan="6" class="table-empty-msg">No active hosts tracked yet.</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <div class="card-footer">
+            <span id="hosts-count-display" class="footer-count-text">Tracking 0 hosts</span>
+        </div>
+    </div>
+</div>
+{% endblock %}

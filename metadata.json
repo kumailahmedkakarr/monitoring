@@ -1,0 +1,6 @@
+{
+  "name": "Network Attack & Monitoring Framework",
+  "description": "Beginner-friendly Linux network security monitoring tool built with Python, Flask, Scapy, and SQLite for cybersecurity lab analysis.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

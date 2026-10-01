@@ -1,0 +1,197 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard | Network Attack &amp; Monitoring Framework{% endblock %}
+
+{% block content %}
+<div class="dashboard-grid">
+
+    <!-- 1. Statistics Cards -->
+    <div class="stats-overview-grid">
+        <div class="stat-card">
+            <div class="stat-icon-wrapper blue">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+            </div>
+            <div class="stat-content">
+                <span class="stat-label">Packets Captured</span>
+                <span class="stat-value" id="stat-total-packets">0</span>
+            </div>
+        </div>
+
+        <div class="stat-card">
+            <div class="stat-icon-wrapper green">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
+            </div>
+            <div class="stat-content">
+                <span class="stat-label">Active Hosts</span>
+                <span class="stat-value" id="stat-total-hosts">0</span>
+            </div>
+        </div>
+
+        <div class="stat-card">
+            <div class="stat-icon-wrapper red">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+            </div>
+            <div class="stat-content">
+                <span class="stat-label">Total Alerts</span>
+                <span class="stat-value" id="stat-total-alerts">0</span>
+            </div>
+        </div>
+
+        <div class="stat-card">
+            <div class="stat-icon-wrapper cyan">
+                <span class="protocol-tag-symbol">TCP</span>
+            </div>
+            <div class="stat-content">
+                <span class="stat-label">TCP Packets</span>
+                <span class="stat-value" id="stat-tcp-packets">0</span>
+            </div>
+        </div>
+
+        <div class="stat-card">
+            <div class="stat-icon-wrapper purple">
+                <span class="protocol-tag-symbol">UDP</span>
+            </div>
+            <div class="stat-content">
+                <span class="stat-label">UDP Packets</span>
+                <span class="stat-value" id="stat-udp-packets">0</span>
+            </div>
+        </div>
+
+        <div class="stat-card">
+            <div class="stat-icon-wrapper amber">
+                <span class="protocol-tag-symbol">ICMP</span>
+            </div>
+            <div class="stat-content">
+                <span class="stat-label">ICMP Packets</span>
+                <span class="stat-value" id="stat-icmp-packets">0</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- 2. Middle Row: Protocol Distribution & Live Activity Header -->
+    <div class="dashboard-row-middle">
+        <!-- Protocol Breakdown Widget -->
+        <div class="card protocol-widget-card">
+            <div class="card-header">
+                <h3 class="card-title">Protocol Distribution</h3>
+                <span class="card-subtitle">Breakdown of analyzed network traffic</span>
+            </div>
+            <div class="card-body protocol-widget-body">
+                <div class="progress-bar-container">
+                    <div class="progress-item">
+                        <div class="progress-header">
+                            <span>TCP (Transmission Control)</span>
+                            <span id="pct-tcp">0%</span>
+                        </div>
+                        <div class="progress-track">
+                            <div class="progress-fill fill-tcp" id="bar-tcp" style="width: 0%;"></div>
+                        </div>
+                    </div>
+
+                    <div class="progress-item">
+                        <div class="progress-header">
+                            <span>UDP (User Datagram)</span>
+                            <span id="pct-udp">0%</span>
+                        </div>
+                        <div class="progress-track">
+                            <div class="progress-fill fill-udp" id="bar-udp" style="width: 0%;"></div>
+                        </div>
+                    </div>
+
+                    <div class="progress-item">
+                        <div class="progress-header">
+                            <span>ICMP (Control Message)</span>
+                            <span id="pct-icmp">0%</span>
+                        </div>
+                        <div class="progress-track">
+                            <div class="progress-fill fill-icmp" id="bar-icmp" style="width: 0%;"></div>
+                        </div>
+                    </div>
+
+                    <div class="progress-item">
+                        <div class="progress-header">
+                            <span>Other Protocols</span>
+                            <span id="pct-other">0%</span>
+                        </div>
+                        <div class="progress-track">
+                            <div class="progress-fill fill-other" id="bar-other" style="width: 0%;"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Canvas chart container (if Chart.js is supported) -->
+                <div class="chart-wrapper">
+                    <canvas id="protocolDoughnutChart" width="160" height="160"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <!-- Recent Alerts Summary Widget -->
+        <div class="card alerts-widget-card">
+            <div class="card-header">
+                <div class="card-title-group">
+                    <h3 class="card-title">Recent Security Alerts</h3>
+                    <span class="card-subtitle">Automated defensive rule triggers</span>
+                </div>
+                <a href="{{ url_for('alerts_page') }}" class="card-action-link">View All Alerts →</a>
+            </div>
+            <div class="card-body table-responsive">
+                <table class="data-table alerts-mini-table">
+                    <thead>
+                        <tr>
+                            <th>Time</th>
+                            <th>Alert Type</th>
+                            <th>Severity</th>
+                            <th>Source IP</th>
+                            <th>Target IP</th>
+                        </tr>
+                    </thead>
+                    <tbody id="dashboard-alerts-body">
+                        <tr>
+                            <td colspan="5" class="table-empty-msg">No alerts generated yet. Monitoring traffic...</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- 3. Live Network Traffic Table -->
+    <div class="card full-width-card">
+        <div class="card-header">
+            <div class="card-title-group">
+                <h3 class="card-title">Live Network Activity</h3>
+                <span class="card-subtitle">Streaming packets from selected network interface (Last 100 packets)</span>
+            </div>
+            <div class="card-controls">
+                <span class="live-pulse-badge">
+                    <span class="pulse-ring"></span>
+                    <span class="pulse-text">STREAMING</span>
+                </span>
+                <button class="btn btn-sm btn-outline" onclick="fetchPackets(true)">Refresh</button>
+            </div>
+        </div>
+        <div class="card-body table-responsive">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th style="width: 170px;">Time</th>
+                        <th>Source IP</th>
+                        <th>Destination IP</th>
+                        <th style="width: 90px;">Protocol</th>
+                        <th style="width: 100px;">Src Port</th>
+                        <th style="width: 100px;">Dst Port</th>
+                        <th style="width: 80px;">Length</th>
+                    </tr>
+                </thead>
+                <tbody id="dashboard-packets-body">
+                    <tr>
+                        <td colspan="7" class="table-empty-msg">Waiting for traffic capture. Click "START MONITORING" above.</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+</div>
+{% endblock %}

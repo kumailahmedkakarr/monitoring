@@ -1,0 +1,127 @@
+{% extends "base.html" %}
+
+{% block title %}Settings | Network Attack &amp; Monitoring Framework{% endblock %}
+
+{% block content %}
+<div class="page-container">
+    <div class="settings-grid">
+
+        <!-- Network Interface Configuration -->
+        <div class="card">
+            <div class="card-header">
+                <h3 class="card-title">Network Interface</h3>
+                <span class="card-subtitle">Current capture adapter and available system interfaces</span>
+            </div>
+            <div class="card-body">
+                <div class="settings-item">
+                    <span class="settings-key">Active Interface:</span>
+                    <span class="badge badge-primary" id="settings-current-iface">lo</span>
+                </div>
+                <div class="settings-item">
+                    <span class="settings-key">Monitor State:</span>
+                    <span class="badge" id="settings-monitor-state">STOPPED</span>
+                </div>
+                <div class="settings-divider"></div>
+                <h4 class="settings-section-title">Detected System Interfaces:</h4>
+                <ul class="iface-list" id="settings-available-ifaces">
+                    <li>Loading interfaces...</li>
+                </ul>
+                <p class="settings-hint">
+                    To change the interface, select it from the top bar dropdown while the monitor is STOPPED, then click START.
+                </p>
+            </div>
+        </div>
+
+        <!-- Defensive Detection Thresholds -->
+        <div class="card">
+            <div class="card-header">
+                <h3 class="card-title">Detection Engine Rules (Read-Only V1)</h3>
+                <span class="card-subtitle">Defensive heuristics configured in config.py</span>
+            </div>
+            <div class="card-body">
+                <div class="threshold-card">
+                    <div class="threshold-header">
+                        <strong>Rule 1 — Possible Port Scan</strong>
+                        <span class="badge badge-medium">MEDIUM</span>
+                    </div>
+                    <p class="threshold-desc">Triggers when a single source IP contacts distinct destination ports on a target.</p>
+                    <div class="threshold-meta">
+                        <span>Threshold: <strong id="thresh-portscan">15 ports</strong></span>
+                        <span>Window: <strong id="thresh-portscan-win">10 sec</strong></span>
+                    </div>
+                </div>
+
+                <div class="threshold-card">
+                    <div class="threshold-header">
+                        <strong>Rule 2 — High Packet Rate</strong>
+                        <span class="badge badge-medium">MEDIUM</span>
+                    </div>
+                    <p class="threshold-desc">Triggers when a single source IP exceeds packet volume limits (potential flood).</p>
+                    <div class="threshold-meta">
+                        <span>Threshold: <strong id="thresh-pkts">60 packets</strong></span>
+                        <span>Window: <strong id="thresh-pkts-win">5 sec</strong></span>
+                    </div>
+                </div>
+
+                <div class="threshold-card">
+                    <div class="threshold-header">
+                        <strong>Rule 3 — Repeated Connection Attempts</strong>
+                        <span class="badge badge-low">LOW</span>
+                    </div>
+                    <p class="threshold-desc">Triggers on repeated TCP bursts to the same service endpoint.</p>
+                    <div class="threshold-meta">
+                        <span>Threshold: <strong id="thresh-repeat">12 attempts</strong></span>
+                        <span>Window: <strong id="thresh-repeat-win">5 sec</strong></span>
+                    </div>
+                </div>
+
+                <div class="threshold-card">
+                    <div class="threshold-header">
+                        <strong>Rule 4 — High ICMP Activity</strong>
+                        <span class="badge badge-low">LOW</span>
+                    </div>
+                    <p class="threshold-desc">Triggers when a source generates unusual ping echo/reconnaissance bursts.</p>
+                    <div class="threshold-meta">
+                        <span>Threshold: <strong id="thresh-icmp">12 packets</strong></span>
+                        <span>Window: <strong id="thresh-icmp-win">5 sec</strong></span>
+                    </div>
+                </div>
+
+                <div class="threshold-card">
+                    <div class="threshold-header">
+                        <strong>Alert Cooldown Suppression</strong>
+                        <span class="badge badge-primary">ANTI-SPAM</span>
+                    </div>
+                    <p class="threshold-desc">Suppresses duplicate alerts for the same source/destination to prevent database flooding.</p>
+                    <div class="threshold-meta">
+                        <span>Cooldown: <strong id="thresh-cooldown">30 sec</strong></span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Storage & System Environment -->
+        <div class="card full-width-card">
+            <div class="card-header">
+                <h3 class="card-title">Environment &amp; Storage Paths</h3>
+                <span class="card-subtitle">Version 1 local file paths</span>
+            </div>
+            <div class="card-body">
+                <div class="settings-item">
+                    <span class="settings-key">SQLite Database:</span>
+                    <code class="code-path" id="settings-db-path">data/network_monitor.db</code>
+                </div>
+                <div class="settings-item">
+                    <span class="settings-key">Audit Log File:</span>
+                    <code class="code-path" id="settings-log-path">logs/network_monitor.log</code>
+                </div>
+                <div class="settings-item">
+                    <span class="settings-key">Engine Architecture:</span>
+                    <span>Scapy 2.5+ background daemon thread, SQLite WAL mode, Flask REST polling.</span>
+                </div>
+            </div>
+        </div>
+
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+
+{% block title %}Live Packets | Network Attack &amp; Monitoring Framework{% endblock %}
+
+{% block content %}
+<div class="page-container">
+    <div class="card full-width-card">
+        <div class="card-header">
+            <div class="card-title-group">
+                <h3 class="card-title">Network Packet Inspector</h3>
+                <span class="card-subtitle">Real-time inspection of captured network frames</span>
+            </div>
+            <div class="card-controls">
+                <label class="toggle-control">
+                    <input type="checkbox" id="packets-auto-refresh" checked>
+                    <span>Live Auto-Update</span>
+                </label>
+                <button class="btn btn-sm btn-outline" onclick="loadPacketsPageData()">Apply Filter</button>
+            </div>
+        </div>
+
+        <!-- Filter Bar -->
+        <div class="filter-bar">
+            <div class="filter-item">
+                <label for="filter-ip" class="filter-label">Search IP:</label>
+                <input type="text" id="filter-ip" class="form-input" placeholder="e.g. 192.168.1.10">
+            </div>
+
+            <div class="filter-item">
+                <label for="filter-protocol" class="filter-label">Protocol:</label>
+                <select id="filter-protocol" class="form-select">
+                    <option value="ALL">All Protocols</option>
+                    <option value="TCP">TCP</option>
+                    <option value="UDP">UDP</option>
+                    <option value="ICMP">ICMP</option>
+                    <option value="OTHER">Other</option>
+                </select>
+            </div>
+
+            <div class="filter-item">
+                <label for="filter-limit" class="filter-label">Rows:</label>
+                <select id="filter-limit" class="form-select">
+                    <option value="50">50</option>
+                    <option value="100" selected>100</option>
+                    <option value="200">200</option>
+                    <option value="500">500</option>
+                </select>
+            </div>
+
+            <div class="filter-actions">
+                <button class="btn btn-secondary btn-sm" onclick="resetPacketFilters()">Reset</button>
+            </div>
+        </div>
+
+        <!-- Packets Table -->
+        <div class="card-body table-responsive">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th style="width: 70px;">ID</th>
+                        <th style="width: 170px;">Timestamp</th>
+                        <th>Source IP</th>
+                        <th>Destination IP</th>
+                        <th style="width: 90px;">Protocol</th>
+                        <th style="width: 100px;">Src Port</th>
+                        <th style="width: 100px;">Dst Port</th>
+                        <th style="width: 90px;">Length</th>
+                    </tr>
+                </thead>
+                <tbody id="packets-table-body">
+                    <tr>
+                        <td colspan="8" class="table-empty-msg">Loading packets...</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <div class="card-footer">
+            <span id="packets-count-display" class="footer-count-text">Showing 0 packets</span>
+        </div>
+    </div>
+</div>
+{% endblock %}
