@@ -2,8 +2,14 @@ import os
 
 # Base Directories
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(BASE_DIR, "data")
-LOGS_DIR = os.path.join(BASE_DIR, "logs")
+
+# On Vercel serverless, root filesystem is read-only; use /tmp for SQLite and logs
+if os.environ.get("VERCEL"):
+    DATA_DIR = os.environ.get("DATA_DIR", "/tmp/data")
+    LOGS_DIR = os.environ.get("LOGS_DIR", "/tmp/logs")
+else:
+    DATA_DIR = os.path.join(BASE_DIR, "data")
+    LOGS_DIR = os.path.join(BASE_DIR, "logs")
 
 # Ensure required directories exist
 os.makedirs(DATA_DIR, exist_ok=True)

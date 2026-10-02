@@ -1,0 +1,30 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "services": {
+    "app": {
+      "root": ".",
+      "framework": "vite",
+      "bindings": [
+        {
+          "type": "service",
+          "service": "network-monitor",
+          "format": "url",
+          "env": "NETWORK_MONITOR_URL"
+        }
+      ]
+    },
+    "network-monitor": {
+      "root": "network-monitor",
+      "framework": "flask",
+      "entrypoint": "app.py"
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/(.*)",
+      "destination": {
+        "service": "app"
+      }
+    }
+  ]
+}
