@@ -18,11 +18,12 @@ import {
   RefreshCw,
   BookOpen,
   Radio,
-  Flame,
   Globe,
   Sliders,
   HelpCircle,
-  ExternalLink
+  ExternalLink,
+  Wifi,
+  WifiOff
 } from "lucide-react";
 
 // Types
@@ -59,14 +60,45 @@ interface Host {
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<"dashboard" | "packets" | "alerts" | "hosts" | "settings" | "codebase" | "guide" | "theory">("dashboard");
-  const [isRunning, setIsRunning] = useState<boolean>(true);
+  const [isRunning, setIsRunning] = useState<boolean>(false);
   const [selectedInterface, setSelectedInterface] = useState<string>("ens33");
-  const [availableInterfaces] = useState<string[]>(["ens33", "eth0", "wlan0", "lo"]);
+  const [availableInterfaces, setAvailableInterfaces] = useState<string[]>(["ens33", "eth0", "wlan0", "lo"]);
 
-  // In-memory packet stream
+  // Backend Engine connection state (Kali Linux VM / Local Linux)
+  const [engineUrl, setEngineUrl] = useState<string>(() => {
+    return localStorage.getItem("netmonitor_engine_url") || "http://127.0.0.1:5000";
+  });
+  const [tempEngineUrl, setTempEngineUrl] = useState<string>(() => {
+    return localStorage.getItem("netmonitor_engine_url") || "http://127.0.0.1:5000";
+  });
+  const [isEngineOnline, setIsEngineOnline] = useState<boolean>(false);
+  const [isCheckingEngine, setIsCheckingEngine] = useState<boolean>(false);
+  const [engineError, setEngineError] = useState<string | null>("Monitoring engine offline. Start the Python/Scapy backend on Kali Linux.");
+  const [lastCheckTime, setLastCheckTime] = useState<string>("");
+  const [pingLatency, setPingLatency] = useState<number | null>(null);
+
+  // Real packet stream & records (populated strictly from real backend)
   const [packets, setPackets] = useState<Packet[]>([]);
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [hosts, setHosts] = useState<Map<string, Host>>(new Map());
+  const [backendStats, setBackendStats] = useState<{
+    total_packets: number;
+    tcp_packets: number;
+    udp_packets: number;
+    icmp_packets: number;
+    other_packets: number;
+    total_hosts: number;
+    total_alerts: number;
+  }>({
+    total_packets: 0,
+    tcp_packets: 0,
+    udp_packets: 0,
+    icmp_packets: 0,
+    other_packets: 0,
+    total_hosts: 0,
+    total_alerts: 0
+  });
+
   const [copiedFile, setCopiedFile] = useState<string | null>(null);
 
   // Filters for Packets Tab
@@ -82,8 +114,8 @@ export default function App() {
   // Codebase selected file
   const [selectedCodeFile, setSelectedCodeFile] = useState<string>("app.py");
 
-  // Thresholds (configurable display)
-  const thresholds = {
+  // Thresholds (configurable display from config.py)
+  const [thresholds, setThresholds] = useState({
     portScanLimit: 15,
     portScanWindow: 10,
     packetRateLimit: 60,
@@ -93,138 +125,174 @@ export default function App() {
     icmpLimit: 12,
     icmpWindow: 5,
     alertCooldown: 30
-  };
+  });
 
-  // Cooldown tracking in simulator
-  const cooldownRef = useRef<Map<string, number>>(new Map());
-  const packetIdCounter = useRef<number>(1);
-  const alertIdCounter = useRef<number>(1);
+  // Query Real Backend Engine
+  const fetchEngineData = async (targetUrl = engineUrl) => {
+    setIsCheckingEngine(true);
+    const startTime = performance.now();
+    try {
+      const statusRes = await fetch(`${targetUrl}/api/status`, {
+        signal: AbortSignal.timeout(2500)
+      });
+      if (!statusRes.ok) throw new Error(`HTTP ${statusRes.status}`);
+      const statusData = await statusRes.json();
 
-  // Helper to format timestamps
-  const getTimestamp = () => {
-    const d = new Date();
-    return d.toISOString().replace("T", " ").substring(0, 19);
-  };
+      const elapsed = Math.round(performance.now() - startTime);
+      setPingLatency(elapsed);
+      setIsEngineOnline(true);
+      setEngineError(null);
+      setLastCheckTime(new Date().toLocaleTimeString());
+      setIsRunning(statusData.status === "RUNNING");
+      if (statusData.interface) setSelectedInterface(statusData.interface);
 
-  // Add packet and process detection rules
-  const processIncomingPacket = (pkt: Omit<Packet, "id">) => {
-    const id = packetIdCounter.current++;
-    const fullPkt: Packet = { ...pkt, id };
+      // Fetch stats, interfaces, packets, alerts, hosts
+      const [ifacesRes, statsRes, pktsRes, alertsRes, hostsRes, settingsRes] = await Promise.allSettled([
+        fetch(`${targetUrl}/api/interfaces`),
+        fetch(`${targetUrl}/api/stats`),
+        fetch(`${targetUrl}/api/packets?limit=100`),
+        fetch(`${targetUrl}/api/alerts?limit=100`),
+        fetch(`${targetUrl}/api/hosts?limit=100`),
+        fetch(`${targetUrl}/api/settings`)
+      ]);
 
-    setPackets(prev => [fullPkt, ...prev.slice(0, 299)]);
+      if (ifacesRes.status === "fulfilled" && ifacesRes.value.ok) {
+        const ifacesData = await ifacesRes.value.json();
+        if (ifacesData.interfaces && ifacesData.interfaces.length > 0) {
+          setAvailableInterfaces(ifacesData.interfaces);
+        }
+      }
 
-    // Update Hosts
-    setHosts(prev => {
-      const next = new Map(prev);
-      const updateHost = (ip: string) => {
-        if (!ip || ip === "-") return;
-        const existing = next.get(ip);
-        if (existing) {
-          next.set(ip, {
-            ...existing,
-            last_seen: fullPkt.timestamp,
-            packet_count: existing.packet_count + 1
+      if (statsRes.status === "fulfilled" && statsRes.value.ok) {
+        const statsData = await statsRes.value.json();
+        setBackendStats(statsData);
+      }
+
+      if (pktsRes.status === "fulfilled" && pktsRes.value.ok) {
+        const pktsData = await pktsRes.value.json();
+        setPackets(pktsData.packets || []);
+      }
+
+      if (alertsRes.status === "fulfilled" && alertsRes.value.ok) {
+        const alertsData = await alertsRes.value.json();
+        setAlerts(alertsData.alerts || []);
+      }
+
+      if (hostsRes.status === "fulfilled" && hostsRes.value.ok) {
+        const hostsData = await hostsRes.value.json();
+        const hostMap = new Map<string, Host>();
+        (hostsData.hosts || []).forEach((item: any) => {
+          hostMap.set(item.ip_address, {
+            id: item.id,
+            ip_address: item.ip_address,
+            first_seen: item.first_seen,
+            last_seen: item.last_seen,
+            packet_count: item.packet_count,
+            role: item.ip_address.startsWith("192.168.") || item.ip_address.startsWith("10.") || item.ip_address === "127.0.0.1" ? "local" : "external"
           });
-        } else {
-          next.set(ip, {
-            id: next.size + 1,
-            ip_address: ip,
-            first_seen: fullPkt.timestamp,
-            last_seen: fullPkt.timestamp,
-            packet_count: 1,
-            role: ip.startsWith("192.168.") || ip.startsWith("10.") || ip === "127.0.0.1" ? "local" : "external"
+        });
+        setHosts(hostMap);
+      }
+
+      if (settingsRes.status === "fulfilled" && settingsRes.value.ok) {
+        const settData = await settingsRes.value.json();
+        if (settData.thresholds) {
+          setThresholds({
+            portScanLimit: settData.thresholds.port_scan_threshold,
+            portScanWindow: settData.thresholds.port_scan_window_sec,
+            packetRateLimit: settData.thresholds.high_packet_rate_threshold,
+            packetRateWindow: settData.thresholds.high_packet_rate_window_sec,
+            repeatedConnLimit: settData.thresholds.repeated_conn_threshold,
+            repeatedConnWindow: settData.thresholds.repeated_conn_window_sec,
+            icmpLimit: settData.thresholds.icmp_threshold,
+            icmpWindow: settData.thresholds.icmp_window_sec,
+            alertCooldown: settData.thresholds.alert_cooldown_sec
           });
         }
-      };
-      updateHost(fullPkt.source_ip);
-      updateHost(fullPkt.destination_ip);
-      return next;
-    });
-
-    return fullPkt;
-  };
-
-  // Trigger alert with cooldown check
-  const triggerAlert = (alertType: string, severity: "LOW" | "MEDIUM" | "HIGH", srcIp: string, dstIp: string, description: string) => {
-    const key = `${alertType}-${srcIp}-${dstIp}`;
-    const now = Date.now() / 1000;
-    const lastAlert = cooldownRef.current.get(key);
-
-    if (lastAlert && (now - lastAlert) < thresholds.alertCooldown) {
-      return; // Cooldown suppressed
+      }
+    } catch (err: any) {
+      setIsEngineOnline(false);
+      setPingLatency(null);
+      setEngineError(err.message || "Failed to reach monitoring engine");
+      setIsRunning(false);
+      // Clean slate - DO NOT fabricate fake data when offline
+      setPackets([]);
+      setAlerts([]);
+      setHosts(new Map());
+    } finally {
+      setIsCheckingEngine(false);
     }
-
-    cooldownRef.current.set(key, now);
-    const newAlert: Alert = {
-      id: alertIdCounter.current++,
-      timestamp: getTimestamp(),
-      alert_type: alertType,
-      severity,
-      source_ip: srcIp,
-      destination_ip: dstIp,
-      description,
-      status: "New"
-    };
-
-    setAlerts(prev => [newAlert, ...prev.slice(0, 99)]);
   };
 
-  // Seed initial realistic baseline lab traffic on mount
+  // Background polling every 3.5s
   useEffect(() => {
-    const baselineIps = [
-      { src: "192.168.1.105", dst: "192.168.1.1", proto: "TCP" as const, sport: 54320, dport: 443, len: 64 },
-      { src: "192.168.1.105", dst: "8.8.8.8", proto: "UDP" as const, sport: 53120, dport: 53, len: 78 },
-      { src: "192.168.1.105", dst: "192.168.1.1", proto: "ICMP" as const, sport: null, dport: null, len: 84 },
-      { src: "192.168.1.140", dst: "192.168.1.105", proto: "TCP" as const, sport: 49210, dport: 80, len: 1420 },
-      { src: "10.0.2.15", dst: "10.0.2.2", proto: "TCP" as const, sport: 39820, dport: 22, len: 98 }
-    ];
-
-    baselineIps.forEach(item => {
-      processIncomingPacket({
-        timestamp: getTimestamp(),
-        source_ip: item.src,
-        destination_ip: item.dst,
-        protocol: item.proto,
-        source_port: item.sport,
-        destination_port: item.dport,
-        packet_length: item.len
-      });
-    });
-  }, []);
-
-  // Background regular traffic generator when running
-  useEffect(() => {
-    if (!isRunning) return;
-
+    fetchEngineData();
     const interval = setInterval(() => {
-      const protocols: Array<"TCP" | "UDP" | "ICMP"> = ["TCP", "TCP", "UDP", "ICMP"];
-      const chosenProto = protocols[Math.floor(Math.random() * protocols.length)];
-      const isOutbound = Math.random() > 0.4;
-      const localHost = "192.168.1.105";
-      const remoteHosts = ["192.168.1.1", "142.250.190.46", "1.1.1.1", "192.168.1.120", "104.26.15.232"];
-      const remote = remoteHosts[Math.floor(Math.random() * remoteHosts.length)];
-      const src = isOutbound ? localHost : remote;
-      const dst = isOutbound ? remote : localHost;
-
-      const sport = chosenProto === "ICMP" ? null : Math.floor(Math.random() * 20000) + 40000;
-      const dport = chosenProto === "ICMP" ? null : [80, 443, 53, 22, 8080][Math.floor(Math.random() * 5)];
-
-      processIncomingPacket({
-        timestamp: getTimestamp(),
-        source_ip: src,
-        destination_ip: dst,
-        protocol: chosenProto,
-        source_port: sport,
-        destination_port: dport,
-        packet_length: Math.floor(Math.random() * 1200) + 60
-      });
-    }, 1800);
-
+      fetchEngineData();
+    }, 3500);
     return () => clearInterval(interval);
-  }, [isRunning]);
+  }, [engineUrl]);
 
-  // Statistics calculation
+  // Real Start Monitoring call to Python backend
+  const handleStartMonitoring = async () => {
+    try {
+      const res = await fetch(`${engineUrl}/api/start`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ interface: selectedInterface })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setIsRunning(true);
+        fetchEngineData();
+      } else {
+        alert(data.message || "Failed to start monitoring");
+      }
+    } catch (err: any) {
+      alert(`Cannot connect to monitoring engine at ${engineUrl}.\nPlease ensure the Python/Scapy backend is running on Kali Linux with:\nsudo python3 app.py`);
+    }
+  };
+
+  // Real Stop Monitoring call to Python backend
+  const handleStopMonitoring = async () => {
+    try {
+      const res = await fetch(`${engineUrl}/api/stop`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" }
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setIsRunning(false);
+        fetchEngineData();
+      } else {
+        alert(data.message || "Failed to stop monitoring");
+      }
+    } catch (err: any) {
+      alert(`Cannot connect to monitoring engine at ${engineUrl}.`);
+    }
+  };
+
+  const handleSaveEngineUrl = (newUrl: string) => {
+    let formatted = newUrl.trim();
+    if (formatted.endsWith("/")) formatted = formatted.slice(0, -1);
+    setEngineUrl(formatted);
+    localStorage.setItem("netmonitor_engine_url", formatted);
+    fetchEngineData(formatted);
+  };
+
+  // Statistics calculation from real data
   const stats = useMemo(() => {
+    if (isEngineOnline && backendStats.total_packets > 0) {
+      return {
+        total: backendStats.total_packets,
+        tcp: backendStats.tcp_packets,
+        udp: backendStats.udp_packets,
+        icmp: backendStats.icmp_packets,
+        other: backendStats.other_packets,
+        hostsCount: backendStats.total_hosts || hosts.size,
+        alertsCount: backendStats.total_alerts || alerts.length
+      };
+    }
     let tcp = 0, udp = 0, icmp = 0, other = 0;
     packets.forEach(p => {
       if (p.protocol === "TCP") tcp++;
@@ -241,125 +309,7 @@ export default function App() {
       hostsCount: hosts.size,
       alertsCount: alerts.length
     };
-  }, [packets, hosts, alerts]);
-
-  // Attack Simulators (strictly safe local demonstration of defensive detection)
-  const simulatePortScan = () => {
-    const attackerIp = "192.168.1.189";
-    const targetIp = "192.168.1.105";
-    const targetPorts = [21, 22, 23, 25, 53, 80, 110, 139, 143, 443, 445, 993, 995, 3306, 3389, 8080, 8443];
-
-    targetPorts.forEach((port, idx) => {
-      setTimeout(() => {
-        processIncomingPacket({
-          timestamp: getTimestamp(),
-          source_ip: attackerIp,
-          destination_ip: targetIp,
-          protocol: "TCP",
-          source_port: 50000 + idx,
-          destination_port: port,
-          packet_length: 60
-        });
-
-        if (idx === thresholds.portScanLimit) {
-          triggerAlert(
-            "Possible Port Scan",
-            "MEDIUM",
-            attackerIp,
-            targetIp,
-            `Host ${attackerIp} scanned ${thresholds.portScanLimit}+ distinct ports on target ${targetIp} within 10s window.`
-          );
-        }
-      }, idx * 60);
-    });
-  };
-
-  const simulateHighPacketRate = () => {
-    const attackerIp = "192.168.1.210";
-    const targetIp = "192.168.1.105";
-
-    for (let i = 0; i < 65; i++) {
-      setTimeout(() => {
-        processIncomingPacket({
-          timestamp: getTimestamp(),
-          source_ip: attackerIp,
-          destination_ip: targetIp,
-          protocol: "UDP",
-          source_port: 48000 + (i % 100),
-          destination_port: 53,
-          packet_length: 128
-        });
-
-        if (i === 60) {
-          triggerAlert(
-            "High Packet Rate",
-            "MEDIUM",
-            attackerIp,
-            targetIp,
-            `Host ${attackerIp} generated 60+ packets within 5s window (Potential Flood).`
-          );
-        }
-      }, i * 25);
-    }
-  };
-
-  const simulateIcmpBurst = () => {
-    const attackerIp = "192.168.1.166";
-    const targetIp = "192.168.1.105";
-
-    for (let i = 0; i < 16; i++) {
-      setTimeout(() => {
-        processIncomingPacket({
-          timestamp: getTimestamp(),
-          source_ip: attackerIp,
-          destination_ip: targetIp,
-          protocol: "ICMP",
-          source_port: null,
-          destination_port: null,
-          packet_length: 84
-        });
-
-        if (i === thresholds.icmpLimit) {
-          triggerAlert(
-            "High ICMP Activity",
-            "LOW",
-            attackerIp,
-            targetIp,
-            `Host ${attackerIp} sent ${thresholds.icmpLimit}+ ICMP echo/ping requests within 5s window.`
-          );
-        }
-      }, i * 70);
-    }
-  };
-
-  const simulateRepeatedConnection = () => {
-    const attackerIp = "192.168.1.199";
-    const targetIp = "192.168.1.105";
-
-    for (let i = 0; i < 15; i++) {
-      setTimeout(() => {
-        processIncomingPacket({
-          timestamp: getTimestamp(),
-          source_ip: attackerIp,
-          destination_ip: targetIp,
-          protocol: "TCP",
-          source_port: 55000 + i,
-          destination_port: 8080,
-          packet_length: 64
-        });
-
-        if (i === thresholds.repeatedConnLimit) {
-          triggerAlert(
-            "Repeated Connection Attempts",
-            "LOW",
-            attackerIp,
-            targetIp,
-            `Repeated TCP connection burst: ${attackerIp} initiated ${thresholds.repeatedConnLimit} attempts to ${targetIp}:8080 within 5s.`
-          );
-        }
-      }, i * 80);
-    }
-  };
+  }, [isEngineOnline, backendStats, packets, hosts, alerts]);
 
   // Filtered Packets
   const filteredPackets = useMemo(() => {
@@ -413,6 +363,13 @@ logger = logging.getLogger("network_monitor")
 app = Flask(__name__, template_folder="templates", static_folder="static")
 app.config["SECRET_KEY"] = "cybersecurity-lab-monitor-secret-v1"
 database.init_db()
+
+@app.after_request
+def add_cors_headers(response):
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    return response
 
 @app.route("/")
 def dashboard_page():
@@ -549,7 +506,7 @@ LOGS_DIR = os.path.join(BASE_DIR, "logs")
 DB_PATH = os.path.join(DATA_DIR, "network_monitor.db")
 LOG_FILE = os.path.join(LOGS_DIR, "network_monitor.log")
 
-FLASK_HOST = "127.0.0.1"
+FLASK_HOST = "0.0.0.0"
 FLASK_PORT = 5000
 DEBUG_MODE = False
 
@@ -589,16 +546,16 @@ MAX_MEMORY_PACKETS = 200`,
           </div>
         </div>
 
-        {/* Status Pill */}
+        {/* Engine Status Pill */}
         <div className="m-3 p-2.5 bg-[#1a222c] border border-[#222d3a] rounded-md flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <span className={`w-2.5 h-2.5 rounded-full ${isRunning ? "bg-emerald-400 shadow-[0_0_8px_#34d399]" : "bg-rose-500"}`} />
-            <span className={`text-xs font-bold tracking-wider ${isRunning ? "text-emerald-400" : "text-rose-400"}`}>
-              {isRunning ? "RUNNING" : "STOPPED"}
+            <span className={`w-2.5 h-2.5 rounded-full ${isEngineOnline ? (isRunning ? "bg-emerald-400 shadow-[0_0_8px_#34d399]" : "bg-blue-400") : "bg-rose-500"}`} />
+            <span className={`text-[11px] font-bold tracking-wider ${isEngineOnline ? (isRunning ? "text-emerald-400" : "text-blue-400") : "text-rose-400"}`}>
+              {isEngineOnline ? (isRunning ? "ENGINE RUNNING" : "ENGINE IDLE") : "ENGINE OFFLINE"}
             </span>
           </div>
           <span className="text-[11px] font-mono bg-[#0b0f14] text-gray-300 px-2 py-0.5 rounded border border-[#222d3a]">
-            {selectedInterface}
+            {isEngineOnline ? selectedInterface : "offline"}
           </span>
         </div>
 
@@ -668,7 +625,7 @@ MAX_MEMORY_PACKETS = 200`,
             }`}
           >
             <Settings className="w-4 h-4" />
-            <span>Settings & Rules</span>
+            <span>Settings &amp; Engine</span>
           </button>
 
           <div className="pt-3 pb-1 px-2 text-[10px] font-bold uppercase tracking-wider text-gray-500">
@@ -706,45 +663,37 @@ MAX_MEMORY_PACKETS = 200`,
           </button>
         </nav>
 
-        {/* Safe Attack Generator Box for Live Demo */}
-        <div className="p-3 m-2.5 bg-[#161f2b] border border-blue-900/40 rounded-lg text-xs">
-          <div className="flex items-center gap-1.5 text-blue-300 font-semibold mb-1.5">
-            <Flame className="w-3.5 h-3.5 text-amber-400" />
-            <span>Lab Test Triggers</span>
+        {/* Engine Connection Card in Sidebar */}
+        <div className="p-3 m-2.5 bg-[#161f2b] border border-[#222d3a] rounded-lg text-xs space-y-2">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-1.5 font-semibold text-gray-200 text-[11px]">
+              {isEngineOnline ? <Wifi className="w-3.5 h-3.5 text-emerald-400" /> : <WifiOff className="w-3.5 h-3.5 text-rose-400" />}
+              <span>Backend Engine</span>
+            </div>
+            <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${isEngineOnline ? "bg-emerald-500/20 text-emerald-400" : "bg-rose-500/20 text-rose-400"}`}>
+              {isEngineOnline ? "ONLINE" : "OFFLINE"}
+            </span>
           </div>
-          <p className="text-[11px] text-gray-400 mb-2 leading-tight">
-            Trigger safe defensive test heuristics:
-          </p>
-          <div className="grid grid-cols-2 gap-1.5">
-            <button
-              onClick={simulatePortScan}
-              className="px-2 py-1 bg-[#202d3d] hover:bg-[#28384d] text-[11px] text-gray-200 rounded border border-[#2e3f54] text-left truncate transition"
-              title="Contacts 17 ports to trigger Possible Port Scan"
-            >
-              Port Scan
-            </button>
-            <button
-              onClick={simulateHighPacketRate}
-              className="px-2 py-1 bg-[#202d3d] hover:bg-[#28384d] text-[11px] text-gray-200 rounded border border-[#2e3f54] text-left truncate transition"
-              title="Generates 65 packets to trigger High Packet Rate"
-            >
-              Packet Flood
-            </button>
-            <button
-              onClick={simulateIcmpBurst}
-              className="px-2 py-1 bg-[#202d3d] hover:bg-[#28384d] text-[11px] text-gray-200 rounded border border-[#2e3f54] text-left truncate transition"
-              title="Sends 16 ICMP echo packets to trigger High ICMP Activity"
-            >
-              ICMP Flood
-            </button>
-            <button
-              onClick={simulateRepeatedConnection}
-              className="px-2 py-1 bg-[#202d3d] hover:bg-[#28384d] text-[11px] text-gray-200 rounded border border-[#2e3f54] text-left truncate transition"
-              title="Repeats 15 TCP bursts to same port"
-            >
-              TCP Burst
-            </button>
+
+          <div className="text-[11px] text-gray-400 truncate font-mono bg-[#0b0f14] p-1.5 rounded border border-[#222d3a]">
+            {engineUrl}
           </div>
+
+          {isEngineOnline && pingLatency !== null && (
+            <div className="text-[10px] text-gray-400 flex justify-between">
+              <span>Latency:</span>
+              <span className="font-mono text-emerald-400">{pingLatency} ms</span>
+            </div>
+          )}
+
+          <button
+            onClick={() => fetchEngineData()}
+            disabled={isCheckingEngine}
+            className="w-full py-1 bg-[#202d3d] hover:bg-[#28384d] text-[11px] text-gray-300 rounded border border-[#2e3f54] flex items-center justify-center gap-1.5 transition"
+          >
+            <RefreshCw className={`w-3 h-3 ${isCheckingEngine ? "animate-spin" : ""}`} />
+            <span>{isCheckingEngine ? "Connecting..." : "Check Engine"}</span>
+          </button>
         </div>
 
         {/* Footer */}
@@ -776,7 +725,7 @@ MAX_MEMORY_PACKETS = 200`,
                 id="iface-top"
                 value={selectedInterface}
                 onChange={e => setSelectedInterface(e.target.value)}
-                disabled={isRunning}
+                disabled={isRunning || !isEngineOnline}
                 className="bg-[#0f151c] border border-[#222d3a] text-xs text-gray-200 px-2.5 py-1.5 rounded-md focus:border-blue-500 outline-none disabled:opacity-60"
               >
                 {availableInterfaces.map(iface => (
@@ -790,16 +739,16 @@ MAX_MEMORY_PACKETS = 200`,
             {/* Start / Stop Buttons */}
             <div className="flex items-center gap-2">
               <button
-                onClick={() => setIsRunning(true)}
-                disabled={isRunning}
+                onClick={handleStartMonitoring}
+                disabled={isRunning || !isEngineOnline}
                 className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 disabled:hover:bg-emerald-600 text-white text-xs font-bold rounded-md transition shadow-sm"
               >
                 <Play className="w-3.5 h-3.5 fill-current" />
                 START MONITORING
               </button>
               <button
-                onClick={() => setIsRunning(false)}
-                disabled={!isRunning}
+                onClick={handleStopMonitoring}
+                disabled={!isRunning || !isEngineOnline}
                 className="flex items-center gap-1.5 px-3 py-1.5 bg-rose-600 hover:bg-rose-500 disabled:opacity-40 disabled:hover:bg-rose-600 text-white text-xs font-bold rounded-md transition shadow-sm"
               >
                 <Square className="w-3.5 h-3.5 fill-current" />
@@ -814,6 +763,40 @@ MAX_MEMORY_PACKETS = 200`,
           {/* TAB 1: DASHBOARD */}
           {activeTab === "dashboard" && (
             <div className="space-y-6">
+              {/* Engine Offline Banner (if not connected) */}
+              {!isEngineOnline && (
+                <div className="p-4 bg-amber-500/10 border border-amber-500/30 rounded-lg flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+                  <div className="flex items-center gap-3">
+                    <div className="w-8 h-8 rounded-md bg-amber-500/20 text-amber-400 flex items-center justify-center shrink-0">
+                      <AlertTriangle className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <div className="font-bold text-amber-300">Monitoring Engine Offline</div>
+                      <div className="text-gray-400">
+                        The Python / Scapy capture engine is currently not detected at <span className="font-mono text-gray-200">{engineUrl}</span>.
+                        Run <code className="text-emerald-400 font-mono">sudo python3 app.py</code> in your Kali Linux VM to start capturing live network traffic.
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => fetchEngineData()}
+                      disabled={isCheckingEngine}
+                      className="px-3 py-1.5 bg-[#1a222c] hover:bg-[#232d3a] border border-[#222d3a] rounded text-gray-300 text-xs font-semibold flex items-center gap-1.5 transition"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${isCheckingEngine ? "animate-spin" : ""}`} />
+                      <span>{isCheckingEngine ? "Checking..." : "Reconnect"}</span>
+                    </button>
+                    <button
+                      onClick={() => setActiveTab("settings")}
+                      className="px-3 py-1.5 bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 border border-blue-500/30 rounded text-xs font-semibold transition"
+                    >
+                      Configure IP
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {/* Stat Cards */}
               <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3.5">
                 <div className="p-4 bg-[#121820] border border-[#222d3a] rounded-lg flex items-center gap-3">
@@ -884,7 +867,7 @@ MAX_MEMORY_PACKETS = 200`,
                   <div className="flex items-center justify-between mb-4 pb-2 border-b border-[#222d3a]">
                     <div>
                       <h3 className="text-xs font-bold text-white uppercase tracking-wider">Protocol Breakdown</h3>
-                      <p className="text-[11px] text-gray-400">Distribution of observed network traffic</p>
+                      <p className="text-[11px] text-gray-400">Distribution of analyzed network traffic</p>
                     </div>
                     <span className="text-xs font-mono text-gray-400">{stats.total} total</span>
                   </div>
@@ -970,7 +953,7 @@ MAX_MEMORY_PACKETS = 200`,
                   <div className="overflow-x-auto">
                     {alerts.length === 0 ? (
                       <div className="py-8 text-center text-xs text-gray-500 italic">
-                        No security alerts generated yet. Click a test trigger in the sidebar to simulate activity.
+                        {isEngineOnline ? "No security alerts generated yet. Heuristic rules are monitoring traffic." : "Monitoring engine offline - Start Kali VM backend to view alerts."}
                       </div>
                     ) : (
                       <table className="w-full text-left text-xs">
@@ -1016,11 +999,11 @@ MAX_MEMORY_PACKETS = 200`,
                   <div className="flex items-center gap-2.5">
                     <h3 className="text-xs font-bold text-white uppercase tracking-wider">Live Network Activity</h3>
                     <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 text-[10px] font-mono">
-                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                      STREAMING
+                      <span className={`w-1.5 h-1.5 rounded-full ${isEngineOnline && isRunning ? "bg-emerald-400 animate-pulse" : "bg-rose-500"}`} />
+                      <span>{isEngineOnline && isRunning ? "STREAMING" : (isEngineOnline ? "ENGINE IDLE" : "ENGINE OFFLINE")}</span>
                     </div>
                   </div>
-                  <span className="text-xs text-gray-400">Last 100 packets on {selectedInterface}</span>
+                  <span className="text-xs text-gray-400">Captured on interface: {selectedInterface}</span>
                 </div>
 
                 <div className="overflow-x-auto">
@@ -1037,31 +1020,43 @@ MAX_MEMORY_PACKETS = 200`,
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-[#222d3a]">
-                      {packets.slice(0, 25).map(pkt => (
-                        <tr key={pkt.id} className="hover:bg-white/[0.02]">
-                          <td className="py-2 font-mono text-gray-400 text-[11px]">{pkt.timestamp}</td>
-                          <td className="py-2 font-mono text-blue-300">{pkt.source_ip}</td>
-                          <td className="py-2 font-mono text-blue-300">{pkt.destination_ip}</td>
-                          <td className="py-2">
-                            <span
-                              className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
-                                pkt.protocol === "TCP"
-                                  ? "bg-sky-500/20 text-sky-400"
-                                  : pkt.protocol === "UDP"
-                                  ? "bg-purple-500/20 text-purple-400"
-                                  : pkt.protocol === "ICMP"
-                                  ? "bg-amber-500/20 text-amber-400"
-                                  : "bg-gray-500/20 text-gray-400"
-                              }`}
-                            >
-                              {pkt.protocol}
-                            </span>
+                      {packets.length === 0 ? (
+                        <tr>
+                          <td colSpan={7} className="py-8 text-center text-xs text-gray-500 italic">
+                            {isEngineOnline
+                              ? isRunning
+                                ? `Waiting for incoming traffic on interface ${selectedInterface}...`
+                                : 'Monitoring is stopped. Click "START MONITORING" to capture live packets.'
+                              : `Monitoring engine offline - No live traffic received. Start the Python/Scapy backend on Kali Linux (sudo python3 app.py).`}
                           </td>
-                          <td className="py-2 font-mono text-amber-300/80">{pkt.source_port ?? "-"}</td>
-                          <td className="py-2 font-mono text-amber-300/80">{pkt.destination_port ?? "-"}</td>
-                          <td className="py-2 font-mono text-gray-300">{pkt.packet_length} B</td>
                         </tr>
-                      ))}
+                      ) : (
+                        packets.slice(0, 25).map(pkt => (
+                          <tr key={pkt.id} className="hover:bg-white/[0.02]">
+                            <td className="py-2 font-mono text-gray-400 text-[11px]">{pkt.timestamp}</td>
+                            <td className="py-2 font-mono text-blue-300">{pkt.source_ip}</td>
+                            <td className="py-2 font-mono text-blue-300">{pkt.destination_ip}</td>
+                            <td className="py-2">
+                              <span
+                                className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
+                                  pkt.protocol === "TCP"
+                                    ? "bg-sky-500/20 text-sky-400"
+                                    : pkt.protocol === "UDP"
+                                    ? "bg-purple-500/20 text-purple-400"
+                                    : pkt.protocol === "ICMP"
+                                    ? "bg-amber-500/20 text-amber-400"
+                                    : "bg-gray-500/20 text-gray-400"
+                                }`}
+                              >
+                                {pkt.protocol}
+                              </span>
+                            </td>
+                            <td className="py-2 font-mono text-amber-300/80">{pkt.source_port ?? "-"}</td>
+                            <td className="py-2 font-mono text-amber-300/80">{pkt.destination_port ?? "-"}</td>
+                            <td className="py-2 font-mono text-gray-300">{pkt.packet_length} B</td>
+                          </tr>
+                        ))
+                      )}
                     </tbody>
                   </table>
                 </div>
@@ -1152,32 +1147,40 @@ MAX_MEMORY_PACKETS = 200`,
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-[#222d3a]">
-                      {filteredPackets.map(pkt => (
-                        <tr key={pkt.id} className="hover:bg-white/[0.02]">
-                          <td className="py-2 text-gray-500 font-mono text-[11px]">#{pkt.id}</td>
-                          <td className="py-2 font-mono text-gray-400 text-[11px]">{pkt.timestamp}</td>
-                          <td className="py-2 font-mono text-blue-300">{pkt.source_ip}</td>
-                          <td className="py-2 font-mono text-blue-300">{pkt.destination_ip}</td>
-                          <td className="py-2">
-                            <span
-                              className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
-                                pkt.protocol === "TCP"
-                                  ? "bg-sky-500/20 text-sky-400"
-                                  : pkt.protocol === "UDP"
-                                  ? "bg-purple-500/20 text-purple-400"
-                                  : pkt.protocol === "ICMP"
-                                  ? "bg-amber-500/20 text-amber-400"
-                                  : "bg-gray-500/20 text-gray-400"
-                              }`}
-                            >
-                              {pkt.protocol}
-                            </span>
+                      {filteredPackets.length === 0 ? (
+                        <tr>
+                          <td colSpan={8} className="py-8 text-center text-xs text-gray-500 italic">
+                            {isEngineOnline ? "No packets match the filter criteria." : "Monitoring engine offline - No packets to display."}
                           </td>
-                          <td className="py-2 font-mono text-amber-300/80">{pkt.source_port ?? "-"}</td>
-                          <td className="py-2 font-mono text-amber-300/80">{pkt.destination_port ?? "-"}</td>
-                          <td className="py-2 font-mono text-gray-300">{pkt.packet_length} B</td>
                         </tr>
-                      ))}
+                      ) : (
+                        filteredPackets.map(pkt => (
+                          <tr key={pkt.id} className="hover:bg-white/[0.02]">
+                            <td className="py-2 text-gray-500 font-mono text-[11px]">#{pkt.id}</td>
+                            <td className="py-2 font-mono text-gray-400 text-[11px]">{pkt.timestamp}</td>
+                            <td className="py-2 font-mono text-blue-300">{pkt.source_ip}</td>
+                            <td className="py-2 font-mono text-blue-300">{pkt.destination_ip}</td>
+                            <td className="py-2">
+                              <span
+                                className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
+                                  pkt.protocol === "TCP"
+                                    ? "bg-sky-500/20 text-sky-400"
+                                    : pkt.protocol === "UDP"
+                                    ? "bg-purple-500/20 text-purple-400"
+                                    : pkt.protocol === "ICMP"
+                                    ? "bg-amber-500/20 text-amber-400"
+                                    : "bg-gray-500/20 text-gray-400"
+                                }`}
+                              >
+                                {pkt.protocol}
+                              </span>
+                            </td>
+                            <td className="py-2 font-mono text-amber-300/80">{pkt.source_port ?? "-"}</td>
+                            <td className="py-2 font-mono text-amber-300/80">{pkt.destination_port ?? "-"}</td>
+                            <td className="py-2 font-mono text-gray-300">{pkt.packet_length} B</td>
+                          </tr>
+                        ))
+                      )}
                     </tbody>
                   </table>
                 </div>
@@ -1255,7 +1258,7 @@ MAX_MEMORY_PACKETS = 200`,
                 <div className="overflow-x-auto">
                   {filteredAlerts.length === 0 ? (
                     <div className="py-12 text-center text-xs text-gray-500 italic">
-                      No matching security alerts found.
+                      {isEngineOnline ? "No matching security alerts found." : "Monitoring engine offline - No security alerts to display."}
                     </div>
                   ) : (
                     <table className="w-full text-left text-xs">
@@ -1333,33 +1336,41 @@ MAX_MEMORY_PACKETS = 200`,
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-[#222d3a]">
-                    {Array.from(hosts.values()).map(h => (
-                      <tr key={h.ip_address} className="hover:bg-white/[0.02]">
-                        <td className="py-2.5 text-gray-500 font-mono">#{h.id}</td>
-                        <td className="py-2.5 font-mono font-bold text-blue-300">{h.ip_address}</td>
-                        <td className="py-2.5">
-                          <span className={`px-2 py-0.5 rounded text-[10px] font-semibold ${
-                            h.role === "local" ? "bg-emerald-500/20 text-emerald-400" : "bg-purple-500/20 text-purple-400"
-                          }`}>
-                            {h.role === "local" ? "Local Subnet" : "External IP"}
-                          </span>
-                        </td>
-                        <td className="py-2.5 font-mono text-gray-400 text-[11px]">{h.first_seen}</td>
-                        <td className="py-2.5 font-mono text-gray-400 text-[11px]">{h.last_seen}</td>
-                        <td className="py-2.5 font-mono text-gray-200">{h.packet_count.toLocaleString()}</td>
-                        <td className="py-2.5">
-                          <button
-                            onClick={() => {
-                              setPacketSearchIp(h.ip_address);
-                              setActiveTab("packets");
-                            }}
-                            className="px-2 py-1 bg-[#1a222c] hover:bg-[#232d3a] text-blue-400 text-[11px] rounded border border-[#222d3a]"
-                          >
-                            Inspect Traffic
-                          </button>
+                    {hosts.size === 0 ? (
+                      <tr>
+                        <td colSpan={7} className="py-8 text-center text-xs text-gray-500 italic">
+                          {isEngineOnline ? "No active hosts recorded yet. Waiting for traffic..." : "Monitoring engine offline - No hosts detected."}
                         </td>
                       </tr>
-                    ))}
+                    ) : (
+                      Array.from(hosts.values()).map(h => (
+                        <tr key={h.ip_address} className="hover:bg-white/[0.02]">
+                          <td className="py-2.5 text-gray-500 font-mono">#{h.id}</td>
+                          <td className="py-2.5 font-mono font-bold text-blue-300">{h.ip_address}</td>
+                          <td className="py-2.5">
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-semibold ${
+                              h.role === "local" ? "bg-emerald-500/20 text-emerald-400" : "bg-purple-500/20 text-purple-400"
+                            }`}>
+                              {h.role === "local" ? "Local Subnet" : "External IP"}
+                            </span>
+                          </td>
+                          <td className="py-2.5 font-mono text-gray-400 text-[11px]">{h.first_seen}</td>
+                          <td className="py-2.5 font-mono text-gray-400 text-[11px]">{h.last_seen}</td>
+                          <td className="py-2.5 font-mono text-gray-200">{h.packet_count.toLocaleString()}</td>
+                          <td className="py-2.5">
+                            <button
+                              onClick={() => {
+                                setPacketSearchIp(h.ip_address);
+                                setActiveTab("packets");
+                              }}
+                              className="px-2 py-1 bg-[#1a222c] hover:bg-[#232d3a] text-blue-400 text-[11px] rounded border border-[#222d3a]"
+                            >
+                              Inspect Traffic
+                            </button>
+                          </td>
+                        </tr>
+                      ))
+                    )}
                   </tbody>
                 </table>
               </div>
@@ -1368,98 +1379,172 @@ MAX_MEMORY_PACKETS = 200`,
 
           {/* TAB 5: SETTINGS & RULES */}
           {activeTab === "settings" && (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-              <div className="bg-[#121820] border border-[#222d3a] rounded-lg p-5 space-y-4">
-                <h3 className="text-sm font-bold text-white border-b border-[#222d3a] pb-2">
-                  Network Interface Configuration
-                </h3>
-
-                <div className="flex justify-between items-center text-xs py-1 border-b border-[#222d3a]/60">
-                  <span className="text-gray-400">Active Capture Interface:</span>
-                  <span className="font-mono bg-blue-500/10 text-blue-400 px-2 py-0.5 rounded border border-blue-500/30">
-                    {selectedInterface}
+            <div className="space-y-5">
+              {/* Kali VM Connection Card */}
+              <div className="bg-[#121820] border border-[#222d3a] rounded-lg p-5">
+                <div className="flex items-center justify-between border-b border-[#222d3a] pb-3 mb-4">
+                  <div className="flex items-center gap-2.5">
+                    <Wifi className="w-5 h-5 text-blue-400" />
+                    <div>
+                      <h3 className="text-sm font-bold text-white">Monitoring Engine Connection (Kali Linux VM)</h3>
+                      <p className="text-xs text-gray-400">Configure connection to your Python/Scapy backend running on Linux</p>
+                    </div>
+                  </div>
+                  <span className={`text-xs px-2.5 py-1 rounded font-bold ${isEngineOnline ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30" : "bg-rose-500/20 text-rose-400 border border-rose-500/30"}`}>
+                    {isEngineOnline ? "CONNECTED" : "DISCONNECTED"}
                   </span>
                 </div>
 
-                <div className="flex justify-between items-center text-xs py-1 border-b border-[#222d3a]/60">
-                  <span className="text-gray-400">Capture Engine Status:</span>
-                  <span className={`font-bold ${isRunning ? "text-emerald-400" : "text-rose-400"}`}>
-                    {isRunning ? "RUNNING" : "STOPPED"}
-                  </span>
-                </div>
+                <div className="space-y-4 text-xs">
+                  <div>
+                    <label className="text-gray-300 font-semibold block mb-1.5">Engine API Base URL:</label>
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={tempEngineUrl}
+                        onChange={e => setTempEngineUrl(e.target.value)}
+                        placeholder="http://127.0.0.1:5000 or http://192.168.1.150:5000"
+                        className="flex-1 px-3 py-2 bg-[#0b0f14] border border-[#222d3a] rounded-md font-mono text-gray-200 outline-none focus:border-blue-500"
+                      />
+                      <button
+                        onClick={() => handleSaveEngineUrl(tempEngineUrl)}
+                        disabled={isCheckingEngine}
+                        className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white font-semibold rounded-md transition"
+                      >
+                        {isCheckingEngine ? "Connecting..." : "Save & Connect"}
+                      </button>
+                      <button
+                        onClick={() => handleSaveEngineUrl("http://127.0.0.1:5000")}
+                        className="px-3 py-2 bg-[#1a222c] hover:bg-[#232d3a] border border-[#222d3a] text-gray-300 rounded-md"
+                      >
+                        Default (localhost)
+                      </button>
+                    </div>
+                    <p className="text-[11px] text-gray-400 mt-1.5">
+                      • When running browser and Kali in the same VM: use <code className="text-blue-400">http://127.0.0.1:5000</code><br />
+                      • When accessing from Windows host or Vercel: use your Kali VM's IP, e.g. <code className="text-blue-400">http://192.168.x.x:5000</code> (check with <code className="text-emerald-400">ip addr</code> on Kali).
+                    </p>
+                  </div>
 
-                <div className="flex justify-between items-center text-xs py-1 border-b border-[#222d3a]/60">
-                  <span className="text-gray-400">SQLite Storage File:</span>
-                  <span className="font-mono text-gray-300 text-[11px]">data/network_monitor.db</span>
-                </div>
-
-                <div className="flex justify-between items-center text-xs py-1 border-b border-[#222d3a]/60">
-                  <span className="text-gray-400">Audit Log File:</span>
-                  <span className="font-mono text-gray-300 text-[11px]">logs/network_monitor.log</span>
-                </div>
-
-                <div className="pt-2">
-                  <h4 className="text-xs font-semibold text-gray-300 mb-2">Detected Interface Adapters:</h4>
-                  <div className="flex flex-wrap gap-2">
-                    {availableInterfaces.map(iface => (
-                      <span key={iface} className="font-mono text-xs bg-[#1a222c] border border-[#222d3a] px-2.5 py-1 rounded text-gray-300">
-                        {iface}
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2">
+                    <div className="p-3 bg-[#1a222c] rounded border border-[#222d3a]">
+                      <span className="text-gray-400 block mb-1">Connection State:</span>
+                      <span className={`font-bold ${isEngineOnline ? "text-emerald-400" : "text-rose-400"}`}>
+                        {isEngineOnline ? "Online & Responding" : "Offline / Unreachable"}
                       </span>
-                    ))}
+                    </div>
+
+                    <div className="p-3 bg-[#1a222c] rounded border border-[#222d3a]">
+                      <span className="text-gray-400 block mb-1">Ping Latency:</span>
+                      <span className="font-mono text-gray-200">
+                        {pingLatency !== null ? `${pingLatency} ms` : "N/A"}
+                      </span>
+                    </div>
+
+                    <div className="p-3 bg-[#1a222c] rounded border border-[#222d3a]">
+                      <span className="text-gray-400 block mb-1">Last Status Check:</span>
+                      <span className="font-mono text-gray-200">
+                        {lastCheckTime || "Never"}
+                      </span>
+                    </div>
                   </div>
                 </div>
               </div>
 
-              <div className="bg-[#121820] border border-[#222d3a] rounded-lg p-5 space-y-3.5">
-                <h3 className="text-sm font-bold text-white border-b border-[#222d3a] pb-2">
-                  Heuristic Detection Thresholds (config.py)
-                </h3>
+              {/* Interface & Heuristic Rules */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                <div className="bg-[#121820] border border-[#222d3a] rounded-lg p-5 space-y-4">
+                  <h3 className="text-sm font-bold text-white border-b border-[#222d3a] pb-2">
+                    Network Interface Configuration
+                  </h3>
 
-                <div className="p-3 bg-[#1a222c] border border-[#222d3a] rounded-md text-xs">
-                  <div className="flex justify-between items-center font-semibold mb-1">
-                    <span className="text-white">Rule 1 — Possible Port Scan</span>
-                    <span className="text-amber-400 text-[10px] bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/30">MEDIUM</span>
+                  <div className="flex justify-between items-center text-xs py-1 border-b border-[#222d3a]/60">
+                    <span className="text-gray-400">Active Capture Interface:</span>
+                    <span className="font-mono bg-blue-500/10 text-blue-400 px-2 py-0.5 rounded border border-blue-500/30">
+                      {selectedInterface}
+                    </span>
                   </div>
-                  <p className="text-gray-400 text-[11px] mb-1.5">Triggers on unique ports contacted on a single target IP.</p>
-                  <div className="font-mono text-[11px] text-gray-300 flex justify-between">
-                    <span>Threshold: {thresholds.portScanLimit} ports</span>
-                    <span>Window: {thresholds.portScanWindow}s</span>
+
+                  <div className="flex justify-between items-center text-xs py-1 border-b border-[#222d3a]/60">
+                    <span className="text-gray-400">Capture Engine Status:</span>
+                    <span className={`font-bold ${isRunning ? "text-emerald-400" : "text-rose-400"}`}>
+                      {isRunning ? "RUNNING" : "STOPPED"}
+                    </span>
+                  </div>
+
+                  <div className="flex justify-between items-center text-xs py-1 border-b border-[#222d3a]/60">
+                    <span className="text-gray-400">SQLite Storage File:</span>
+                    <span className="font-mono text-gray-300 text-[11px]">data/network_monitor.db</span>
+                  </div>
+
+                  <div className="flex justify-between items-center text-xs py-1 border-b border-[#222d3a]/60">
+                    <span className="text-gray-400">Audit Log File:</span>
+                    <span className="font-mono text-gray-300 text-[11px]">logs/network_monitor.log</span>
+                  </div>
+
+                  <div className="pt-2">
+                    <h4 className="text-xs font-semibold text-gray-300 mb-2">Detected Interface Adapters:</h4>
+                    <div className="flex flex-wrap gap-2">
+                      {availableInterfaces.map(iface => (
+                        <span key={iface} className="font-mono text-xs bg-[#1a222c] border border-[#222d3a] px-2.5 py-1 rounded text-gray-300">
+                          {iface}
+                        </span>
+                      ))}
+                    </div>
                   </div>
                 </div>
 
-                <div className="p-3 bg-[#1a222c] border border-[#222d3a] rounded-md text-xs">
-                  <div className="flex justify-between items-center font-semibold mb-1">
-                    <span className="text-white">Rule 2 — High Packet Rate</span>
-                    <span className="text-amber-400 text-[10px] bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/30">MEDIUM</span>
-                  </div>
-                  <p className="text-gray-400 text-[11px] mb-1.5">Triggers when single host emits rapid packet bursts.</p>
-                  <div className="font-mono text-[11px] text-gray-300 flex justify-between">
-                    <span>Threshold: {thresholds.packetRateLimit} pkts</span>
-                    <span>Window: {thresholds.packetRateWindow}s</span>
-                  </div>
-                </div>
+                <div className="bg-[#121820] border border-[#222d3a] rounded-lg p-5 space-y-3.5">
+                  <h3 className="text-sm font-bold text-white border-b border-[#222d3a] pb-2">
+                    Heuristic Detection Thresholds (config.py)
+                  </h3>
 
-                <div className="p-3 bg-[#1a222c] border border-[#222d3a] rounded-md text-xs">
-                  <div className="flex justify-between items-center font-semibold mb-1">
-                    <span className="text-white">Rule 3 — Repeated Connection Attempts</span>
-                    <span className="text-blue-400 text-[10px] bg-blue-500/10 px-1.5 py-0.5 rounded border border-blue-500/30">LOW</span>
+                  <div className="p-3 bg-[#1a222c] border border-[#222d3a] rounded-md text-xs">
+                    <div className="flex justify-between items-center font-semibold mb-1">
+                      <span className="text-white">Rule 1 — Possible Port Scan</span>
+                      <span className="text-amber-400 text-[10px] bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/30">MEDIUM</span>
+                    </div>
+                    <p className="text-gray-400 text-[11px] mb-1.5">Triggers on unique ports contacted on a single target IP.</p>
+                    <div className="font-mono text-[11px] text-gray-300 flex justify-between">
+                      <span>Threshold: {thresholds.portScanLimit} ports</span>
+                      <span>Window: {thresholds.portScanWindow}s</span>
+                    </div>
                   </div>
-                  <p className="text-gray-400 text-[11px] mb-1.5">Triggers on repeated TCP attempts to same service port.</p>
-                  <div className="font-mono text-[11px] text-gray-300 flex justify-between">
-                    <span>Threshold: {thresholds.repeatedConnLimit} conns</span>
-                    <span>Window: {thresholds.repeatedConnWindow}s</span>
-                  </div>
-                </div>
 
-                <div className="p-3 bg-[#1a222c] border border-[#222d3a] rounded-md text-xs">
-                  <div className="flex justify-between items-center font-semibold mb-1">
-                    <span className="text-white">Rule 4 — High ICMP Activity</span>
-                    <span className="text-blue-400 text-[10px] bg-blue-500/10 px-1.5 py-0.5 rounded border border-blue-500/30">LOW</span>
+                  <div className="p-3 bg-[#1a222c] border border-[#222d3a] rounded-md text-xs">
+                    <div className="flex justify-between items-center font-semibold mb-1">
+                      <span className="text-white">Rule 2 — High Packet Rate</span>
+                      <span className="text-amber-400 text-[10px] bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/30">MEDIUM</span>
+                    </div>
+                    <p className="text-gray-400 text-[11px] mb-1.5">Triggers when single host emits rapid packet bursts.</p>
+                    <div className="font-mono text-[11px] text-gray-300 flex justify-between">
+                      <span>Threshold: {thresholds.packetRateLimit} pkts</span>
+                      <span>Window: {thresholds.packetRateWindow}s</span>
+                    </div>
                   </div>
-                  <p className="text-gray-400 text-[11px] mb-1.5">Triggers on ping floods or ICMP reconnaissance bursts.</p>
-                  <div className="font-mono text-[11px] text-gray-300 flex justify-between">
-                    <span>Threshold: {thresholds.icmpLimit} echo pkts</span>
-                    <span>Window: {thresholds.icmpWindow}s</span>
+
+                  <div className="p-3 bg-[#1a222c] border border-[#222d3a] rounded-md text-xs">
+                    <div className="flex justify-between items-center font-semibold mb-1">
+                      <span className="text-white">Rule 3 — Repeated Connection Attempts</span>
+                      <span className="text-blue-400 text-[10px] bg-blue-500/10 px-1.5 py-0.5 rounded border border-blue-500/30">LOW</span>
+                    </div>
+                    <p className="text-gray-400 text-[11px] mb-1.5">Triggers on repeated TCP attempts to same service port.</p>
+                    <div className="font-mono text-[11px] text-gray-300 flex justify-between">
+                      <span>Threshold: {thresholds.repeatedConnLimit} conns</span>
+                      <span>Window: {thresholds.repeatedConnWindow}s</span>
+                    </div>
+                  </div>
+
+                  <div className="p-3 bg-[#1a222c] border border-[#222d3a] rounded-md text-xs">
+                    <div className="flex justify-between items-center font-semibold mb-1">
+                      <span className="text-white">Rule 4 — High ICMP Activity</span>
+                      <span className="text-blue-400 text-[10px] bg-blue-500/10 px-1.5 py-0.5 rounded border border-blue-500/30">LOW</span>
+                    </div>
+                    <p className="text-gray-400 text-[11px] mb-1.5">Triggers on ping floods or ICMP reconnaissance bursts.</p>
+                    <div className="font-mono text-[11px] text-gray-300 flex justify-between">
+                      <span>Threshold: {thresholds.icmpLimit} echo pkts</span>
+                      <span>Window: {thresholds.icmpWindow}s</span>
+                    </div>
                   </div>
                 </div>
               </div>

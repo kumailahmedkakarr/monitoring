@@ -20,8 +20,8 @@ DB_PATH = os.path.join(DATA_DIR, "network_monitor.db")
 LOG_FILE = os.path.join(LOGS_DIR, "network_monitor.log")
 
 # Web Server Settings
-FLASK_HOST = "127.0.0.1"
-FLASK_PORT = 5000
+FLASK_HOST = os.environ.get("FLASK_HOST", "0.0.0.0")
+FLASK_PORT = int(os.environ.get("FLASK_PORT", 5000))
 DEBUG_MODE = False
 
 # Detection Engine Thresholds (Configurable)
